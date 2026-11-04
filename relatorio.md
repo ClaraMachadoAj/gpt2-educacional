@@ -1,6 +1,8 @@
-## Arquitetura GPT-2 em PyTorch
+# GPT-2 em PyTorch
 
-O modelo aprende uma tarefa simples de enunciar: dado um pedaço de texto, qual byte vem depois? A arquitetura segue o GPT-2, com dois blocos e um corpus pequeno para rodar em CPU.
+## 1. O que o modelo faz
+
+O modelo aprende uma tarefa simples: prever o próximo byte de um trecho de texto. A arquitetura segue o GPT-2, com dois blocos e um corpus pequeno para rodar em CPU.
 
 ### Configuração e tokenização
 
@@ -10,7 +12,7 @@ Os scripts representam cada byte UTF-8 por um inteiro de 0 a 255. Por exemplo, "
 
 ### Entradas, embeddings e posições
 
-A entrada de GPT.forward é uma matriz [B, T] de IDs inteiros, com B sequências e T tokens por sequência. A tabela tokens transforma cada ID em um vetor de C valores. A tabela positions representa os índices de 0 a T-1 e produz [T, C]. A soma com broadcasting aplica as mesmas posições a todo o lote e retorna [B, T, C].
+A entrada de GPT.forward é uma matriz [B, T] de IDs inteiros, com B sequências e T tokens por sequência. A tabela tokens transforma cada ID em um vetor de C valores. A tabela positions representa os índices de 0 a T-1 e produz [T, C]. O PyTorch soma os mesmos vetores de posição a cada sequência do lote. O resultado tem forma [B, T, C].
 
 O embedding dá ao modelo uma representação treinável de cada símbolo. A informação de posição permite distinguir ocorrências do mesmo símbolo em locais diferentes e fornece ao modelo uma noção da ordem. Depois da soma, os blocos transformam os vetores mantendo sua forma.
 
@@ -18,7 +20,7 @@ O embedding dá ao modelo uma representação treinável de cada símbolo. A inf
 
 IDs [B, T] → embeddings [B, T, C] → blocos [B, T, C] → normalização final → logits [B, T, V]. Cada vetor de V logits expressa as preferências do modelo pelo próximo byte naquela posição.
 
-## Atenção causal e transformação
+## 2. Como a atenção funciona
 
 ### Consultas, chaves e valores
 
@@ -34,11 +36,11 @@ O softmax normaliza cada linha e a multiplicação pelos valores produz uma méd
 
 ### LayerNorm, conexões residuais e MLP
 
-O bloco aplica LayerNorm antes de cada ramo. A normalização usa a média e a variância das C características de cada posição, seguidas de escala e deslocamento aprendidos. Ela estabiliza a escala da entrada de cada transformação sem misturar tokens.
+O bloco aplica LayerNorm antes de cada ramo. A normalização usa a média e a variância das C características de cada posição, seguidas de escala e deslocamento aprendidos. Isso ajusta a escala dos valores de cada token separadamente.
 
 O código calcula x + atenção(norm(x)) e, com o resultado atualizado, x + mlp(norm(x)). As somas preservam um caminho direto para a representação e para os gradientes. O MLP opera em cada posição de modo independente. Ele expande C para 4C, aplica GELU e projeta de volta para C. A GELU introduz não linearidade, permitindo combinar características além do que duas projeções lineares poderiam representar juntas.
 
-## De logits a um novo token
+## 3. Treino e geração
 
 ### Cabeça de linguagem e função de perda
 
@@ -58,7 +60,7 @@ generate.py codifica o prefixo, carrega o checkpoint e chama GPT.generate. A cad
 
 O código recalcula a janela a cada passo e reinicia os índices de posição dentro dela. A sequência completa é preservada na saída. Como o sorteio ocorre por byte, a decodificação substitui combinações UTF-8 inválidas.
 
-## O que os testes mostram
+## 4. O que foi testado
 
 ### Como verificar o comportamento
 
@@ -76,11 +78,11 @@ Os demais testes conferem a geração com janela móvel e top-k igual a 1, o des
 
 • Capacidade e custo: a configuração reduzida facilita testar em CPU. A matriz de atenção cresce quadraticamente com T, e o exemplo usa pesos inicializados localmente e um corpus demonstrativo.
 
-### O que dá para concluir
+### Como interpretar o resultado
 
 O teste do prefixo é a checagem mais direta da máscara. Mesmo com um final diferente, as primeiras previsões continuam iguais. Já a queda da perda mostra que o modelo ajustou seus pesos às frases do corpus. Como as mesmas frases aparecem no treino e na validação, a próxima checagem seria separar textos inteiros e avaliar em frases inéditas.
 
-## Uma linha da máscara, na prática
+## 5. Um exemplo de máscara
 
 ### O que acontece com três posições
 
@@ -96,7 +98,7 @@ Em model.py, scores guarda uma linha para cada consulta. A transposição de k t
 
 O teste troca dois IDs no fim da sequência e compara os logits das três primeiras posições. A comparação atravessa o modelo inteiro, da primeira projeção à cabeça de linguagem. Uma máscara invertida ou aplicada no eixo errado tende a aparecer como diferença nesses logits.
 
-## Acompanhar uma entrada de ponta a ponta
+## 6. O formato dos tensores
 
 ### Um lote de duas sequências
 
@@ -112,7 +114,7 @@ No MLP, cada vetor de 64 características passa por 256 unidades intermediárias
 
 A cabeça retorna [2, 5, 256]. São dez previsões, cada uma com um escore para cada byte possível. No treino, a perda compara essas dez previsões com dez IDs alvo. Na geração, o código usa apenas o vetor da última posição para decidir o que acrescentar.
 
-## Por que os alvos andam uma posição
+## 7. Como montar os alvos
 
 ### Da janela ao lote
 
@@ -122,13 +124,13 @@ batch_from sorteia a posição inicial de cada janela. O último início possív
 
 ### O que significa uma perda de 5,55
 
-Se todos os 256 bytes fossem igualmente prováveis, a chance do byte correto seria 1/256 e a perda seria ln(256), cerca de 5,55. Esse valor dá uma referência para interpretar a primeira medição. A perda final menor indica que, em média, o modelo passou a atribuir mais probabilidade aos alvos avaliados.
+Se todos os 256 bytes fossem igualmente prováveis, a chance do byte correto seria 1/256 e a perda seria ln(256), cerca de 5,55. A primeira perda de treino ficou perto desse valor. A perda final menor indica que, em média, o modelo passou a atribuir mais probabilidade aos alvos avaliados.
 
 ### Por que separar o corpus antes de fazer janelas
 
 Se a divisão fosse feita depois de sortear janelas, uma janela de treino e outra de validação poderiam compartilhar quase todos os bytes. O script separa primeiro os trechos. Neste corpus, as mesmas frases reaparecem nos dois trechos por construção, então a avaliação continua sendo uma demonstração do pipeline.
 
-## O que saiu de uma rodada em CPU
+## 8. Uma execução em CPU
 
 ### Como reproduzir
 
@@ -152,9 +154,9 @@ A perda de treino mostrada é a do lote daquele passo. A de validação é a mé
 
 ### O checkpoint funciona?
 
-O script de geração abriu o arquivo salvo, reconstruiu o modelo com a configuração armazenada e completou o prefixo. O início da saída foi “Na bibliotecalvpe h.toiAul.”. Essa amostra ajuda a separar duas perguntas. O caminho de treino, salvamento e geração funcionou. A qualidade do texto ainda é baixa.
+O script de geração abriu o arquivo salvo, reconstruiu o modelo com a configuração armazenada e completou o prefixo. O início da saída foi “Na bibliotecalvpe h.toiAul.”. O checkpoint abriu e o programa gerou uma continuação. O texto ainda saiu quase sem sentido.
 
-## O que este experimento permite verificar
+## 9. Limites do experimento
 
 ### O que veio da arquitetura GPT-2
 
