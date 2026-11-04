@@ -32,18 +32,18 @@ class CausalSelfAttention(nn.Module):
 
     def forward(self, x):
         batch, time, width = x.shape
-        depth = width // self.heads
-        # Põe as cabeças antes do eixo de tempo para calcular cada uma em paralelo.
-        q, k, v = [
-            part.reshape(batch, time, self.heads, depth).transpose(1, 2)
-            for part in self.qkv(x).chunk(3, dim=-1)
-        ]
-        # Cada linha compara a consulta atual com as chaves da sequência.
-        scores = (q @ k.transpose(-2, -1)) / depth**0.5
-        # O softmax dá peso zero aos escores que viraram -inf.
-        scores = scores.masked_fill(~self.mask[:time, :time], float("-inf"))
-        mixed = scores.softmax(dim=-1) @ v
-        return self.output(mixed.transpose(1, 2).reshape(batch, time, width))
+        head_width = width // self.heads
+        # Separa Q, K e V antes de mover as cabeças para o segundo eixo.
+        projected = self.qkv(x).reshape(batch, time, 3, self.heads, head_width)
+        q, k, v = projected.permute(2, 0, 3, 1, 4).unbind(0)
+
+        scores = (q @ k.transpose(-2, -1)) / head_width**0.5
+        visible = self.mask[:time, :time]
+        scores = scores.masked_fill(~visible, float("-inf"))
+        attention_weights = scores.softmax(dim=-1)
+        head_outputs = attention_weights @ v
+        combined = head_outputs.transpose(1, 2).reshape(batch, time, width)
+        return self.output(combined)
 
 
 class Block(nn.Module):
