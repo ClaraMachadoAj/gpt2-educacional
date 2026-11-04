@@ -24,6 +24,14 @@ O softmax resulta em aproximadamente [0,27; 0,73; 0]. Se os dois primeiros valor
 
 O resultado tem um vetor por cabeça em cada posição. O código reúne as quatro cabeças e aplica uma projeção linear para voltar à largura original de 64. Assim, o bloco seguinte recebe um tensor com o mesmo formato.
 
+## Como conferir os eixos da atenção
+
+Em model.py, a projeção conjunta produz 192 números por posição. O reshape separa esse último eixo em três partes de quatro cabeças com 16 números cada. Depois, permute coloca o eixo de Q, K e V primeiro. Assim, unbind entrega três tensores [B, H, T, d]. Esse passo só muda a maneira de organizar os valores.
+
+Uma linha da matriz scores responde à pergunta “para quais posições este token olha?”. Cada coluna é uma chave. Por isso, softmax(dim=-1) normaliza as colunas de uma consulta e a multiplicação por V devolve um vetor por consulta. Se a normalização fosse feita no eixo das linhas, os pesos que uma consulta usa deixariam de somar um.
+
+No fim da atenção, transpose volta a deixar o tempo antes das cabeças. Só depois vem o reshape que junta os quatro vetores de 16 números. Juntar os eixos antes dessa transposição misturaria posições diferentes. O nome combined indica o ponto em que as cabeças já foram reunidas.
+
 ## O restante do bloco e a saída
 
 O bloco aplica LayerNorm antes de cada ramo. A normalização usa a média e a variância das C características de cada posição, seguidas de escala e deslocamento aprendidos. Isso ajusta a escala dos valores de cada token separadamente.
@@ -43,6 +51,12 @@ batch_from sorteia a posição inicial de cada janela. O último início possív
 Para calcular a perda, o código coloca os logits no formato [B×T, 256] e os alvos no formato [B×T]. A entropia cruzada calcula a média de −log p(alvo). Uma previsão uniforme daria a cada byte probabilidade 1/256 e produziria uma perda de cerca de 5,55.
 
 train.py separa os primeiros 90% dos bytes para treino e os demais para validação, antes de recortar as janelas. Em cada passo, o script limpa os gradientes, calcula a perda, chama backward e limita a norma global do gradiente a 1. O AdamW atualiza os parâmetros a partir desses gradientes. A validação reaproveita as mesmas janelas a cada medição e usa no_grad. O checkpoint salva configuração e pesos para reconstruir o modelo.
+
+## Por que os pesos mudam
+
+O cálculo da perda compara a saída com o byte seguinte conhecido no corpus. Ao chamar backward, o PyTorch calcula quanto cada peso contribuiu para a perda. Como o embedding e a cabeça usam a mesma matriz, essa matriz recebe gradientes tanto pelo lado da entrada quanto pelo lado da saída.
+
+O limite de norma é aplicado depois de backward e antes de optimizer.step. Quando os gradientes ultrapassam o limite, eles são reduzidos juntos. AdamW usa os gradientes para atualizar os pesos. Na avaliação, o código executa só a previsão e o cálculo da perda, sem chamar backward ou atualizar parâmetros.
 
 ## Gerar texto com os pesos salvos
 
@@ -67,6 +81,14 @@ Em CPU, o treino rodou por 100 passos com PyTorch 2.15.0 e semente 42. A tabela 
 | 100 | 3,0646 | 3,0175 |
 
 O script de geração abriu o arquivo salvo, reconstruiu o modelo com a configuração armazenada e completou o prefixo. O início da saída foi “Na bibliotecalvpe h.toiAul.”. O checkpoint abriu e o programa gerou uma continuação. O texto ainda saiu quase sem sentido.
+
+## Como reproduzir a rodada
+
+Na pasta do projeto, instale as dependências com python -m pip install -r requirements.txt. Rode python test_model.py -v para conferir os seis testes.
+
+O comando python train.py --steps 100 --output gpt2.pt treina o modelo e salva os pesos. Depois, python generate.py gpt2.pt “Na biblioteca” --tokens 80 --top-k 20 abre o arquivo e completa o prefixo. No terminal, use aspas retas ao redor do prefixo.
+
+Para isolar o efeito do sorteio, execute a geração novamente com top-k igual a 1. Nesse caso, só o candidato de maior escore permanece. Com top-k igual a 20, o código sorteia entre os candidatos que ficaram. As duas execuções usam os mesmos pesos.
 
 ## O que esses resultados permitem concluir
 
