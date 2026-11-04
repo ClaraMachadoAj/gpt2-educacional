@@ -58,7 +58,7 @@ generate.py codifica o prefixo, carrega o checkpoint e chama GPT.generate. A cad
 
 O código recalcula a janela a cada passo e reinicia os índices de posição dentro dela. A sequência completa é preservada na saída. Como o sorteio ocorre por byte, a decodificação substitui combinações UTF-8 inválidas.
 
-## Testes, relação com a teoria e reflexão
+## O que os testes mostram
 
 ### Como verificar o comportamento
 
@@ -76,19 +76,9 @@ Os demais testes conferem a geração com janela móvel e top-k igual a 1, o des
 
 • Capacidade e custo: a configuração reduzida facilita testar em CPU. A matriz de atenção cresce quadraticamente com T, e o exemplo usa pesos inicializados localmente e um corpus demonstrativo.
 
-### Reflexão pessoal / espaço para preencher
+### O que dá para concluir
 
-1. Qual parte do código você executou ou alterou? Registre o comando e o resultado observado.
-
-______________________________________________________________
-
-2. Que dificuldade apareceu? Como você verificou a causa ou a correção?
-
-______________________________________________________________
-
-3. Que conceito ficou mais claro? Relacione-o a uma linha ou teste.
-
-______________________________________________________________
+O teste do prefixo é a checagem mais direta da máscara. Mesmo com um final diferente, as primeiras previsões continuam iguais. Já a queda da perda mostra que o modelo ajustou seus pesos às frases do corpus. Como as mesmas frases aparecem no treino e na validação, a próxima checagem seria separar textos inteiros e avaliar em frases inéditas.
 
 ### Referências
 
