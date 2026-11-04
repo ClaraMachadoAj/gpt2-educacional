@@ -80,6 +80,98 @@ Os demais testes conferem a geração com janela móvel e top-k igual a 1, o des
 
 O teste do prefixo é a checagem mais direta da máscara. Mesmo com um final diferente, as primeiras previsões continuam iguais. Já a queda da perda mostra que o modelo ajustou seus pesos às frases do corpus. Como as mesmas frases aparecem no treino e na validação, a próxima checagem seria separar textos inteiros e avaliar em frases inéditas.
 
+## Uma linha da máscara, na prática
+
+### O que acontece com três posições
+
+Considere a entrada “gat”. Para a consulta da posição 1, suponha que os escores já escalados sejam [0, 1, 2]. São valores ilustrativos. Antes da máscara, a terceira chave teria o maior escore. Como ela corresponde ao “t”, que ainda está no futuro dessa consulta, o código transforma a linha em [0, 1, −∞].
+
+O softmax resulta em aproximadamente [0,27; 0,73; 0]. Se os dois primeiros valores fossem vetores [2, 0] e [0, 2], a saída da cabeça nessa posição seria aproximadamente [0,54; 1,46]. Mudar o terceiro valor deixaria essa conta igual.
+
+### Onde conferir no código
+
+Em model.py, scores guarda uma linha para cada consulta. A transposição de k troca os eixos de tempo e profundidade para que a multiplicação compare cada consulta com todas as chaves. A máscara registrada no módulo acompanha o dispositivo do modelo. Ela é recortada para T × T, pois a entrada pode ser menor que a janela máxima.
+
+### O que o teste mede
+
+O teste troca dois IDs no fim da sequência e compara os logits das três primeiras posições. A comparação atravessa o modelo inteiro, da primeira projeção à cabeça de linguagem. Uma máscara invertida ou aplicada no eixo errado tende a aparecer como diferença nesses logits.
+
+## Acompanhar uma entrada de ponta a ponta
+
+### Um lote de duas sequências
+
+Imagine B = 2 e T = 5 na configuração padrão. Os IDs têm forma [2, 5]. Depois da soma dos embeddings, há cinco vetores de 64 números em cada sequência, ou seja, [2, 5, 64]. A projeção de atenção produz [2, 5, 192], com 64 características para cada um de Q, K e V.
+
+Separando as quatro cabeças, cada Q, K e V passa a ter forma [2, 4, 5, 16]. A atenção tem [2, 4, 5, 5], porque cada uma das cinco consultas tem cinco chaves possíveis. O produto com V restaura a profundidade 16 de cada cabeça. Reunir as quatro cabeças devolve os 64 números por posição.
+
+### Onde o MLP entra
+
+No MLP, cada vetor de 64 características passa por 256 unidades intermediárias. A GELU age nesses valores e a segunda projeção volta a 64, de modo que a soma residual tenha dimensões compatíveis. A atenção combina posições. O MLP transforma as características de cada posição após essa combinação.
+
+### Na saída do modelo
+
+A cabeça retorna [2, 5, 256]. São dez previsões, cada uma com um escore para cada byte possível. No treino, a perda compara essas dez previsões com dez IDs alvo. Na geração, o código usa apenas o vetor da última posição para decidir o que acrescentar.
+
+## Por que os alvos andam uma posição
+
+### Da janela ao lote
+
+Imagine uma janela de cinco bytes que contém “gatos”. Com contexto quatro, x recebe “gato” e y recebe “atos”. As quatro previsões são g → a, ga → t, gat → o e gato → s. A máscara garante que essas previsões possam ser calculadas juntas, usando em cada coluna só os bytes já vistos até ali.
+
+batch_from sorteia a posição inicial de cada janela. O último início possível é len(data) − context − 1. A chamada a torch.randint usa limite superior exclusivo, então nenhuma janela passa do fim do tensor.
+
+### O que significa uma perda de 5,55
+
+Se todos os 256 bytes fossem igualmente prováveis, a chance do byte correto seria 1/256 e a perda seria ln(256), cerca de 5,55. Esse valor dá uma referência para interpretar a primeira medição. A perda final menor indica que, em média, o modelo passou a atribuir mais probabilidade aos alvos avaliados.
+
+### Por que separar o corpus antes de fazer janelas
+
+Se a divisão fosse feita depois de sortear janelas, uma janela de treino e outra de validação poderiam compartilhar quase todos os bytes. O script separa primeiro os trechos. Neste corpus, as mesmas frases reaparecem nos dois trechos por construção, então a avaliação continua sendo uma demonstração do pipeline.
+
+## O que saiu de uma rodada em CPU
+
+### Como reproduzir
+
+Instale as dependências conforme o README. Execute python test_model.py -v. Para repetir a rodada, use python train.py --steps 100 --output gpt2.pt. Depois execute python generate.py gpt2.pt "Na biblioteca" --tokens 80 --top-k 20. A execução verificada usou PyTorch 2.15.0 em CPU e a semente padrão 42.
+
+### Perda registrada
+
+Passo 1    | treino 5,5565 | validação 5,4446
+
+Passo 25  | treino 4,5193 | validação 4,4918
+
+Passo 50  | treino 3,8675 | validação 3,8044
+
+Passo 75  | treino 3,3512 | validação 3,3205
+
+Passo 100 | treino 3,0646 | validação 3,0175
+
+### Como ler esses números
+
+A perda de treino mostrada é a do lote daquele passo. A de validação é a média de quatro lotes fixos. Comparar a coluna de validação ao longo da execução usa as mesmas janelas e torna mais fácil ver se os pesos estão atribuindo mais probabilidade aos bytes esperados.
+
+### O checkpoint funciona?
+
+O script de geração abriu o arquivo salvo, reconstruiu o modelo com a configuração armazenada e completou o prefixo. O início da saída foi “Na bibliotecalvpe h.toiAul.”. Essa amostra ajuda a separar duas perguntas. O caminho de treino, salvamento e geração funcionou. A qualidade do texto ainda é baixa.
+
+## O que este experimento permite verificar
+
+### O que veio da arquitetura GPT-2
+
+A implementação usa blocos decoder, máscara causal, posições aprendidas, LayerNorm antes dos ramos, MLP com GELU e compartilhamento entre embedding e cabeça de saída. O exercício usa dois blocos pequenos, um corpus curto e bytes individuais. O vídeo de referência apresenta a reprodução da variante de 124 milhões de parâmetros, com outra escala de dados e treino.
+
+### O custo de olhar para o prefixo
+
+Para cada sequência, a atenção guarda T × T escores por cabeça. Se a janela passar de 64 para 128, essa matriz passa de 4.096 para 16.384 posições por cabeça. A implementação deixa essa matriz explícita, o que facilita seguir o cálculo. Na geração, ela é refeita para a janela atual a cada token.
+
+### Qual seria o próximo teste
+
+Para medir generalização, valeria usar um corpus com documentos distintos e reservar alguns documentos inteiros para validação. Para entender a amostragem, vale manter o mesmo checkpoint e prefixo e comparar top-k igual a 1 com top-k igual a 20. O primeiro sempre escolhe o maior escore de cada passo. O segundo pode escolher outros candidatos e produzir continuações diferentes.
+
+### Conclusão
+
+O resultado mais claro é o teste de causalidade. Ele mostra que trocar o fim da entrada deixa as previsões do começo iguais. Junto dos testes de perda e gradientes, isso verifica a regra que sustenta o treino: cada posição aprende a prever o byte seguinte com a informação disponível até ali.
+
 ### Referências
 
 Andrej Karpathy. Let's reproduce GPT-2 (124M). https://youtu.be/l8pRSuU81PU
